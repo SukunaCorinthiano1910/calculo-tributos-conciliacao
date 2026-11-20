@@ -1,0 +1,13 @@
+# Tema: violeta nos destaques e roxo profundo nos textos. Troque as cores à vontade.
+[theme]
+base = "light"
+primaryColor = "#6A00F4"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4EEFE"
+textColor = "#2B0A5C"
+linkColor = "#6A00F4"
+borderColor = "#E3D6FB"
+dataframeHeaderBackgroundColor = "#F4EEFE"
+baseRadius = "0.6rem"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap, sans-serif"
+chartCategoricalColors = ["#6A00F4", "#E08A00", "#1BAF7A", "#E5487A", "#2A78D6", "#33006B", "#9B6BFF", "#8A8985"]

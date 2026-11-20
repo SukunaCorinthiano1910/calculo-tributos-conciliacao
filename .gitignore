@@ -1,0 +1,17 @@
+# Notas fiscais e planilhas geradas: contêm dados de clientes e fornecedores (LGPD)
+*.pdf
+*.xml
+*.zip
+*.xlsx
+notas/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
