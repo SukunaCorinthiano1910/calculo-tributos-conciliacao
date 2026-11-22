@@ -13,7 +13,7 @@ from formatacao import brl
 
 CAMPOS_DINAMICA = {"Tributo": "tributo", "Esfera": "esfera", "Quem recolhe": "responsavel", "Guia": "guia",
                    "Código de recolhimento": "codigo_recolhimento", "Emitente": "emitente_nome", "Tipo de nota": "tipo",
-                   "Situação": "situacao"}
+                   "Situação": "situacao", "Considerar na apuração": "considerar", "Duplicada": "duplicada"}
 FUNCOES = {"Soma": "sum", "Média": "mean", "Quantidade": "count", "Máximo": "max"}
 LIMITE_CONSULTA = 60   # CNPJs por consulta à BrasilAPI (serviço público com limite de uso)
 
@@ -57,10 +57,12 @@ def _entrada():
 
 def _metricas(r):
     notas, erros = r["notas"], r["erros"]
-    ativas = notas[~notas["situacao"].fillna("").str.contains("Cancel|Substitu")]
+    ativas = notas[notas["considerar"] == "Sim"]          # sem duplicadas, canceladas e substituídas
+    duplicadas = int((notas["duplicada"] == "Sim").sum())
     c = st.columns(5)
-    c[0].metric("Notas lidas", f"{len(notas)}", f"{len(r['problemas'])} arquivo(s) com problema"
-                if r["problemas"] else None, delta_color="inverse")
+    avisos = [f"{len(r['problemas'])} arquivo(s) com problema"] if r["problemas"] else []
+    avisos += [f"{duplicadas} duplicada(s) fora dos totais"] if duplicadas else []
+    c[0].metric("Notas lidas", f"{len(notas)}", " · ".join(avisos) or None, delta_color="inverse")
     c[1].metric("Valor bruto", brl(ativas["valor_bruto"].sum()))
     c[2].metric("Valor líquido", brl(ativas["valor_liquido"].sum()))
     c[3].metric("A recolher pelo tomador", brl(ativas["recolhe_tomador"].sum()),
@@ -100,11 +102,11 @@ def _aba_dinamica(tributos: pd.DataFrame, notas: pd.DataFrame):
     if tributos.empty:
         st.info("Nenhum tributo encontrado nas notas.")
         return
-    # "situacao" nos tributos é a do tributo (retido, apuração própria…); a da nota vem como situacao_nota
-    t = tributos.merge(notas[["arquivo", "pagina", "situacao"]].rename(columns={"situacao": "situacao_nota"}),
-                       on=["arquivo", "pagina"], how="left")
-    if not st.toggle("Incluir notas canceladas/substituídas", key="trib_d_cancel"):
-        t = t[~t["situacao_nota"].fillna("").str.contains("Cancel|Substitu")]
+    t = tributos
+    incluir = st.toggle("Incluir notas duplicadas, canceladas e substituídas", key="trib_d_cancel",
+                        help="Desligado, a tabela usa só as notas com 'Considerar na apuração' = Sim")
+    if not incluir:
+        t = t[t["considerar"] == "Sim"]
     c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
     linhas = c1.multiselect("Linhas", list(CAMPOS_DINAMICA), default=["Tributo", "Quem recolhe"], key="trib_d_lin")
     colunas = c2.selectbox("Colunas", ["(nenhuma)"] + list(CAMPOS_DINAMICA), index=0, key="trib_d_col")
@@ -115,7 +117,7 @@ def _aba_dinamica(tributos: pd.DataFrame, notas: pd.DataFrame):
         return
     piv = mt.resumo_dinamico(t, [CAMPOS_DINAMICA[l] for l in linhas],
                              None if colunas == "(nenhuma)" else [CAMPOS_DINAMICA[colunas]],
-                             {"Valor": "valor", "Base": "base"}[valor], FUNCOES[funcao])
+                             {"Valor": "valor", "Base": "base"}[valor], FUNCOES[funcao], so_consideradas=False)
     piv.index.names = linhas
     formato = "%d" if funcao == "Quantidade" else "R$ %.2f"
     st.dataframe(piv, use_container_width=True,
