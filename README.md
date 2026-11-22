@@ -32,6 +32,10 @@ erros de emissão. A saída é uma tabela dinâmica interativa e uma planilha Ex
 - **Saída:** tabela dinâmica interativa no app (você escolhe linhas, colunas, valor e função) e planilha Excel com as
   abas *Resumo*, *Notas*, *Tributos*, *Erros* e *Leia-me*, todas com filtros. A aba *Tributos* já vem no formato para
   **Inserir → Tabela Dinâmica** no Excel.
+- **Notas duplicadas não somam duas vezes:** quando a mesma nota chega mais de uma vez (por exemplo, em PDF e em
+  XML), a cópia é marcada nas abas *Notas* e *Tributos* (colunas *Duplicada* e *Considerar na apuração*). Fica valendo
+  o XML, que é mais confiável. O *Resumo*, os totais do app e a tabela dinâmica da tela já saem sem duplicadas,
+  canceladas e substituídas; na tabela dinâmica do Excel, filtre *Considerar na apuração* = Sim.
 
 ## Como rodar
 

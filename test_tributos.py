@@ -160,7 +160,8 @@ def test_planilha_dinamica(lote):
     cab = [c.value for c in livro["Tributos"][1]]
     assert {"Tributo", "Quem recolhe", "Código de recolhimento", "Valor"} <= set(cab)
     piv = mt.resumo_dinamico(tributos, ["tributo"], ["responsavel"])
-    assert piv.loc["Total", "Total"] == pytest.approx(tributos["valor"].sum(), abs=0.05)
+    considerados = tributos.loc[tributos["considerar"] == "Sim", "valor"].sum()      # sem a nota cancelada
+    assert piv.loc["Total", "Total"] == pytest.approx(considerados, abs=0.05)
 
 
 def test_compara_enquadramento_com_a_receita(lote):
@@ -184,3 +185,39 @@ def test_layout_do_danfse_real(lote):
     assert mt._codigo_por_texto("Optante - Microempresa ou Empresa de ...", mt.OPCAO_SIMPLES) == 3
     assert mt._codigo_por_texto("Regime de apuração dos tributos federais e municipal pelo SN",
                                 mt.REGIME_APURACAO_SN) == 1
+
+
+def test_nota_em_pdf_e_xml_nao_soma_duas_vezes():
+    """Caso apontado por um usuário: a mesma nota em PDF e em XML aparecia em Erros, mas as duas cópias geravam
+    linhas na aba Tributos (base da tabela dinâmica) e o tributo era somado duas vezes."""
+    base = dict(tipo="NFS-e", numero="77", chave="3550308" + "1" * 43, emitente_cnpj="11.222.333/0001-81",
+                emitente_nome="Alfa", emissao="2026-11-10", valor_bruto=1000.0, valor_liquido=985.0, irrf=15.0,
+                total_retencoes=15.0, codigo_servico="17.01.01", simples_nacional="1 - Não Optante",
+                tributacao_issqn="Operação Tributável", retencao_iss="Não Retido", situacao="NFS-e Regular")
+    notas = pd.DataFrame([mt.nota_vazia(arquivo="nota77.pdf", pagina=1, **base),
+                          mt.nota_vazia(arquivo="nota77.xml", pagina=1, **base),
+                          mt.nota_vazia(arquivo="outra.pdf", pagina=1, **{**base, "numero": "78",
+                                                                           "chave": "3550308" + "2" * 43})])
+    completas, tributos, erros = mt.conciliar(notas, hoje=HOJE)
+    marcas = completas.set_index("arquivo")[["duplicada", "considerar", "duplicada_de"]]
+    assert marcas.loc["nota77.pdf"].tolist() == ["Sim", "Não", "nota77.xml"]      # o XML é a original
+    assert marcas.loc["nota77.xml"].tolist()[:2] == ["Não", "Sim"]
+    irrf = tributos[tributos["tributo"] == "IRRF"]
+    assert set(irrf.loc[irrf["arquivo"] == "nota77.pdf", "considerar"]) == {"Não"}  # marcada na própria aba Tributos
+    piv = mt.resumo_dinamico(tributos, ["tributo"])
+    assert piv.loc["IRRF", "valor"] == 30.0                                         # 2 notas, não 3
+    assert mt.resumo_dinamico(tributos, ["tributo"], so_consideradas=False).loc["IRRF", "valor"] == 45.0
+    dup = erros[erros["problema"].str.contains("duplicidade")]
+    assert dup["arquivo"].tolist() == ["nota77.pdf"] and "nota77.xml" in dup["problema"].iloc[0]
+    livro = load_workbook(io.BytesIO(mt.planilha(completas, tributos, erros)))
+    cab = [c.value for c in livro["Tributos"][1]]
+    assert {"Considerar na apuração", "Duplicada"} <= set(cab)
+    resumo = [r for r in livro["Resumo"].iter_rows(values_only=True) if r[0] == "IRRF"]
+    assert resumo and 30.0 in resumo[0]                                            # o Resumo já sai sem duplicadas
+
+
+def test_canceladas_ficam_fora_da_apuracao(lote):
+    completas, tributos, _ = lote
+    cancelada = _nota(completas, 110)
+    assert cancelada["considerar"] == "Não" and cancelada["duplicada"] == "Não"
+    assert set(tributos.loc[tributos["numero"] == "110", "considerar"]) == {"Não"}

@@ -830,26 +830,56 @@ def erros_da_nota(n: dict, hoje: Optional[date] = None, vistos: Optional[set] = 
     return e
 
 
+def chave_da_nota(n: dict) -> str:
+    """Identidade da nota: a chave de acesso; sem ela, emitente + tipo + número."""
+    chave = so_digitos(n.get("chave"))
+    return chave if len(chave) >= 44 else f"{so_digitos(n.get('emitente_cnpj'))}-{n.get('tipo')}-{n.get('numero')}"
+
+
+def marcar_duplicadas(notas: pd.DataFrame) -> pd.Series:
+    """Para cada nota, o arquivo da nota original quando ela é repetida no lote (None quando é a original).
+    A mesma nota costuma chegar em PDF e em XML: a original é a do XML, que é mais confiável; entre arquivos do
+    mesmo tipo, a primeira lida."""
+    if notas.empty:
+        return pd.Series(dtype=object)
+    chaves = notas.apply(lambda r: chave_da_nota(r.to_dict()), axis=1)
+    prioridade = (~notas["arquivo"].fillna("").str.lower().str.endswith(".xml")).astype(int)
+    ordem = pd.DataFrame({"chave": chaves, "prioridade": prioridade, "pos": range(len(notas))}, index=notas.index)
+    original = ordem.sort_values(["prioridade", "pos"]).groupby("chave").head(1)
+    arquivo_original = notas.loc[original.index].set_index(chaves[original.index])["arquivo"]
+    dup = ~notas.index.isin(original.index)
+    return pd.Series(np.where(dup, chaves.map(arquivo_original), None), index=notas.index)
+
+
 def conciliar(notas: pd.DataFrame, hoje: Optional[date] = None) -> tuple:
     """Notas lidas → (notas com enquadramento/operação/quem recolhe/erros, tributos em formato longo, erros)."""
     if notas.empty:
         vazio = pd.DataFrame()
         return notas.assign(enquadramento=[], operacao=[], qtd_erros=[], qtd_alertas=[]), vazio, vazio
-    vistos, linhas_trib, linhas_erro, resumo = set(), [], [], []
-    for _, linha in notas.iterrows():
+    notas = notas.reset_index(drop=True)
+    duplicada_de = marcar_duplicadas(notas)
+    linhas_trib, linhas_erro, resumo = [], [], []
+    for i, linha in notas.iterrows():
         n = linha.to_dict()
         for c in NUMERICAS:
             n[c] = float(n.get(c) or 0)
+        cancelada = re.search(r"cancel|substitu", _sem_acento(n.get("situacao") or "")) is not None
+        original = duplicada_de[i]
+        # coluna de filtro para a tabela dinâmica: fora duplicadas, canceladas e substituídas
+        marcas = {"duplicada": "Sim" if original else "Não", "considerar": "Não" if original or cancelada else "Sim"}
         ident = {"arquivo": n["arquivo"], "pagina": n["pagina"], "tipo": n["tipo"], "numero": n["numero"],
-                 "emitente_cnpj": n["emitente_cnpj"], "emitente_nome": n["emitente_nome"]}
+                 "emitente_cnpj": n["emitente_cnpj"], "emitente_nome": n["emitente_nome"], **marcas}
         trib = tributos_da_nota(n)
         linhas_trib += [{**ident, **t} for t in trib]
-        erros = erros_da_nota(n, hoje, vistos)
+        erros = erros_da_nota(n, hoje)
+        if original:
+            erros.insert(0, ("Erro", f"Nota em duplicidade: a mesma nota está em {original} e só ela entra nos "
+                                     "totais (filtre 'Considerar na apuração' = Sim)"))
         linhas_erro += [{**ident, "gravidade": g, "problema": m} for g, m in erros]
         a_recolher = [t for t in trib if t["tributo"] not in ("IBS", "CBS") and t["situacao"] not in
                       TRIBUTACAO_ISSQN.values()]                      # IBS/CBS de 2026: só destaque informativo
         retido_tomador = sum(t["valor"] for t in a_recolher if t["responsavel"].startswith(("Tomador", "Intermed")))
-        resumo.append({"enquadramento": enquadramento(n), "operacao": operacao(n),
+        resumo.append({**marcas, "duplicada_de": original, "enquadramento": enquadramento(n), "operacao": operacao(n),
                        "recolhe_tomador": round(retido_tomador, 2),
                        "recolhe_emitente": round(sum(t["valor"] for t in a_recolher) - retido_tomador, 2),
                        "qtd_erros": sum(g == "Erro" for g, _ in erros),
@@ -857,8 +887,8 @@ def conciliar(notas: pd.DataFrame, hoje: Optional[date] = None) -> tuple:
     completas = pd.concat([notas.reset_index(drop=True), pd.DataFrame(resumo)], axis=1)
     return completas, pd.DataFrame(linhas_trib), pd.DataFrame(linhas_erro,
                                                               columns=["arquivo", "pagina", "tipo", "numero",
-                                                                       "emitente_cnpj", "emitente_nome",
-                                                                       "gravidade", "problema"])
+                                                                       "emitente_cnpj", "emitente_nome", "duplicada",
+                                                                       "considerar", "gravidade", "problema"])
 
 
 # ──────────────────────────────────────────────
@@ -919,9 +949,10 @@ ROTULOS = {
     "recolhe_emitente": "Recolhe o emitente", "qtd_erros": "Erros", "qtd_alertas": "Alertas",
     "tributo": "Tributo", "esfera": "Esfera", "responsavel": "Quem recolhe", "guia": "Guia",
     "codigo_recolhimento": "Código de recolhimento", "base": "Base", "aliquota": "Alíquota (%)", "valor": "Valor",
-    "gravidade": "Gravidade", "problema": "Problema",
+    "gravidade": "Gravidade", "problema": "Problema", "duplicada": "Duplicada",
+    "duplicada_de": "Original no arquivo", "considerar": "Considerar na apuração",
 }
-ORDEM_NOTAS = ["arquivo", "pagina", "tipo", "situacao", "numero", "emissao", "competencia", "emitente_cnpj",
+ORDEM_NOTAS = ["arquivo", "pagina", "tipo", "situacao", "considerar", "duplicada", "duplicada_de", "numero", "emissao", "competencia", "emitente_cnpj",
                "emitente_nome", "enquadramento", "operacao", "codigo_servico", "cfop", "destinatario_cnpj",
                "destinatario_nome", "municipio_incidencia", "retencao_iss", "valor_bruto", "desconto_incondicionado",
                "desconto_condicionado", "bc_iss", "aliquota_iss", "iss", "irrf", "contrib_sociais_retidas",
@@ -935,8 +966,11 @@ MOEDA = {"valor_bruto", "desconto_incondicionado", "desconto_condicionado", "ded
 
 
 def resumo_dinamico(tributos: pd.DataFrame, linhas: list, colunas: Optional[list] = None,
-                    valor: str = "valor", funcao: str = "sum") -> pd.DataFrame:
-    """Tabela dinâmica (pivot) dos tributos, com total geral."""
+                    valor: str = "valor", funcao: str = "sum", so_consideradas: bool = True) -> pd.DataFrame:
+    """Tabela dinâmica (pivot) dos tributos, com total geral. Por padrão, sem notas duplicadas, canceladas e
+    substituídas (coluna 'considerar')."""
+    if so_consideradas and "considerar" in tributos:
+        tributos = tributos[tributos["considerar"] == "Sim"]
     if tributos.empty:
         return pd.DataFrame()
     return pd.pivot_table(tributos, index=linhas, columns=colunas or None, values=valor, aggfunc=funcao,
@@ -960,8 +994,11 @@ def planilha(notas: pd.DataFrame, tributos: pd.DataFrame, erros: pd.DataFrame,
             "Notas: uma linha por nota fiscal, com enquadramento, operação, valores, retenções e quantidade de erros.",
             "Tributos: uma linha por tributo de cada nota (quem recolhe, guia, código de recolhimento e valor). "
             "É a base ideal para tabela dinâmica: Inserir → Tabela Dinâmica → tabela 'Tributos'.",
+            "Na tabela dinâmica, filtre 'Considerar na apuração' = Sim: tira notas duplicadas (a mesma nota em PDF e "
+            "XML, ou enviada duas vezes), canceladas e substituídas. A coluna 'Duplicada' mostra só as repetidas.",
             "Erros: problemas de emissão encontrados em cada nota (Erro, Alerta ou Informação).",
-            "Resumo: totais prontos por tributo × quem recolhe e por código de recolhimento.",
+            "Resumo: totais prontos por tributo × quem recolhe e por código de recolhimento, já sem duplicadas, "
+            "canceladas e substituídas.",
             "Todas as abas têm filtros nos cabeçalhos. Códigos de DARF: confira a natureza do pagamento.",
         ]}).to_excel(xl, sheet_name="Leia-me", index=False)
         for nome, df in abas.items():
